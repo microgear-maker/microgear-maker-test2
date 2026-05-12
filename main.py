@@ -7,6 +7,7 @@ import websockets
 import requests
 import os
 import io
+import urllib.request
 from PIL import Image, ImageDraw, ImageFont
 
 API_KEY = os.environ["BYBIT_API_KEY"]
@@ -26,13 +27,30 @@ MUTED = (90, 95, 122)
 GREEN = (14, 203, 129)
 RED = (246, 70, 93)
 YELLOW = (240, 185, 11)
-WHITE = (255, 255, 255)
+
+FONT_REG = "/tmp/roboto.ttf"
+FONT_BOLD = "/tmp/roboto_bold.ttf"
+
+def download_fonts():
+    try:
+        urllib.request.urlretrieve(
+            "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf",
+            FONT_REG
+        )
+        urllib.request.urlretrieve(
+            "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf",
+            FONT_BOLD
+        )
+        print("✅ Шрифты загружены")
+    except Exception as e:
+        print(f"Ошибка загрузки шрифтов: {e}")
+
+download_fonts()
 
 def get_font(size, bold=False):
     try:
-        if bold:
-            return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+        path = FONT_BOLD if bold else FONT_REG
+        return ImageFont.truetype(path, size)
     except:
         return ImageFont.load_default()
 
@@ -49,16 +67,16 @@ def make_card(card_type, symbol, side, price, qty, extra=None):
 
     if card_type == "new":
         type_color = GREEN
-        type_text = "⚡  НОВАЯ ПОЗИЦИЯ"
+        type_text = "НОВАЯ ПОЗИЦИЯ"
     elif card_type == "add":
         type_color = YELLOW
-        type_text = "➕  ДОБИРАЕМ ПОЗИЦИЮ"
+        type_text = "ДОБИРАЕМ ПОЗИЦИЮ"
     elif card_type == "close":
         type_color = RED
-        type_text = "🔒  ПОЗИЦИЯ ЗАКРЫТА"
+        type_text = "ПОЗИЦИЯ ЗАКРЫТА"
     elif card_type == "partial":
         type_color = RED
-        type_text = "📉  ЧАСТИЧНОЕ ЗАКРЫТИЕ"
+        type_text = "ЧАСТИЧНОЕ ЗАКРЫТИЕ"
     else:
         type_color = TEXT
         type_text = card_type
@@ -73,12 +91,10 @@ def make_card(card_type, symbol, side, price, qty, extra=None):
 
     draw.text((24, 22), type_text, font=f13, fill=type_color)
     draw.text((W-24, 22), now, font=f11, fill=MUTED, anchor="ra")
-
     draw.text((24, 58), symbol, font=f26, fill=TEXT)
 
-    badge_text = "LONG" if side == "Buy" else "SHORT" if side == "Sell" else side
+    badge_text = "LONG" if side == "Buy" else "SHORT"
     badge_color = GREEN if side == "Buy" else RED
-    badge_bg = (14, 203, 129, 30) if side == "Buy" else (246, 70, 93, 30)
     bw = 90
     bx = W - 24 - bw
     by = 55
@@ -91,7 +107,7 @@ def make_card(card_type, symbol, side, price, qty, extra=None):
 
     cells = []
     if card_type in ("new", "close", "partial"):
-        label1 = "Цена входа" if card_type == "new" else "Цена закрытия" if card_type == "close" else "Цена закрытия"
+        label1 = "Цена входа" if card_type == "new" else "Цена закрытия"
         cells = [
             (label1, price),
             ("Количество", str(qty)),
