@@ -49,37 +49,60 @@ async def handle_message(data):
     if "topic" not in data:
         return
     
-    if data["topic"] == "execution":
-        for item in data["data"]:
-            side = "🟢 ПОКУПКА" if item["side"] == "Buy" else "🔴 ПРОДАЖА"
-            text = (
-                f"<b>⚡ СДЕЛКА ИСПОЛНЕНА</b>\n"
-                f"Пара: <b>{item['symbol']}</b>\n"
-                f"Направление: {side}\n"
-                f"Цена: <b>${float(item['execPrice']):,.2f}</b>\n"
-                f"Количество: <b>{item['execQty']}</b>\n"
-                f"Тип: {item['orderType']}"
-            )
-            send_telegram(text)
-    
-    if data["topic"] == "position":
-        for item in data["data"]:
-            if float(item["size"]) == 0:
+    try:
+        if data["topic"] == "execution":
+            for item in data["data"]:
+                side = "🟢 ПОКУПКА" if item.get("side") == "Buy" else "🔴 ПРОДАЖА"
+                price = item.get("execPrice", "—")
+                qty = item.get("execQty", "—")
+                symbol = item.get("symbol", "—")
+                order_type = item.get("orderType", "—")
+                try:
+                    price_fmt = f"${float(price):,.2f}"
+                except:
+                    price_fmt = price
                 text = (
-                    f"<b>🔒 ПОЗИЦИЯ ЗАКРЫТА</b>\n"
-                    f"Пара: <b>{item['symbol']}</b>\n"
-                    f"PnL: <b>{item['unrealisedPnl']} USDT</b>"
-                )
-            else:
-                side = "🟢 LONG" if item["side"] == "Buy" else "🔴 SHORT"
-                text = (
-                    f"<b>📊 ПОЗИЦИЯ ОТКРЫТА</b>\n"
-                    f"Пара: <b>{item['symbol']}</b>\n"
+                    f"<b>⚡ СДЕЛКА ИСПОЛНЕНА</b>\n"
+                    f"Пара: <b>{symbol}</b>\n"
                     f"Направление: {side}\n"
-                    f"Размер: <b>{item['size']}</b>\n"
-                    f"Цена входа: <b>${float(item['avgPrice']):,.2f}</b>\n"
-                    f"Плечо: {item['leverage']}x"
+                    f"Цена: <b>{price_fmt}</b>\n"
+                    f"Количество: <b>{qty}</b>\n"
+                    f"Тип: {order_type}"
                 )
-            send_telegram(text)
+                send_telegram(text)
+        
+        if data["topic"] == "position":
+            for item in data["data"]:
+                symbol = item.get("symbol", "—")
+                size = item.get("size", "0")
+                side = item.get("side", "")
+                avg_price = item.get("avgPrice") or item.get("entryPrice") or "—"
+                leverage = item.get("leverage", "—")
+                pnl = item.get("unrealisedPnl", "—")
+                
+                if str(size) == "0":
+                    text = (
+                        f"<b>🔒 ПОЗИЦИЯ ЗАКРЫТА</b>\n"
+                        f"Пара: <b>{symbol}</b>\n"
+                        f"PnL: <b>{pnl} USDT</b>"
+                    )
+                else:
+                    side_text = "🟢 LONG" if side == "Buy" else "🔴 SHORT"
+                    try:
+                        price_fmt = f"${float(avg_price):,.2f}"
+                    except:
+                        price_fmt = avg_price
+                    text = (
+                        f"<b>📊 ПОЗИЦИЯ ОТКРЫТА</b>\n"
+                        f"Пара: <b>{symbol}</b>\n"
+                        f"Направление: {side_text}\n"
+                        f"Размер: <b>{size}</b>\n"
+                        f"Цена входа: <b>{price_fmt}</b>\n"
+                        f"Плечо: {leverage}x"
+                    )
+                send_telegram(text)
+    
+    except Exception as e:
+        print(f"Ошибка обработки: {e} | Данные: {data}")
 
 asyncio.run(connect())
