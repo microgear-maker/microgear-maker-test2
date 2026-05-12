@@ -960,4 +960,4 @@ download_fonts()
 
 load_positions()
 
-asyncio.run(connect()
+asyncio.run(connect())
