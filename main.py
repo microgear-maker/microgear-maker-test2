@@ -13,6 +13,8 @@ TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT_ID = os.environ["TG_CHAT_ID"]
 
 open_positions = {}
+pending_orders = {}
+pending_tasks = {}
 
 def format_price(price):
     try:
@@ -30,6 +32,78 @@ def send_telegram(text):
 
 def get_signature(secret, params_str):
     return hmac.new(secret.encode(), params_str.encode(), hashlib.sha256).hexdigest()
+
+async def flush_order(order_id):
+    await asyncio.sleep(3)
+    
+    order = pending_orders.pop(order_id, None)
+    pending_tasks.pop(order_id, None)
+    if not order:
+        return
+
+    symbol = order["symbol"]
+    side = order["side"]
+    total_qty = order["total_qty"]
+    side_text = "🟢 ПОКУПКА" if side == "Buy" else "🔴 ПРОДАЖА"
+
+    avg_price = order["total_value"] / total_qty if total_qty else 0
+    price_fmt = format_price(avg_price)
+
+    existing = open_positions.get(symbol)
+
+    if existing and existing["side"] == side:
+        old_qty = existing["qty"]
+        old_price = existing["price"]
+        new_qty = old_qty + total_qty
+        new_avg = (old_price * old_qty + avg_price * total_qty) / new_qty
+        open_positions[symbol] = {"side": side, "qty": new_qty, "price": new_avg}
+
+        text = (
+            f"<b>➕ ДОБИРАЕМ ПОЗИЦИЮ</b>\n"
+            f"Пара: <b>{symbol}</b>\n"
+            f"Направление: {side_text}\n"
+            f"Добавлено: <b>{total_qty}</b> по {price_fmt}\n"
+            f"Итого в позиции: <b>{new_qty}</b>\n"
+            f"Средняя цена входа: <b>{format_price(new_avg)}</b>\n"
+            f"🆔 Order ID: <code>{order_id}</code>"
+        )
+
+    elif existing and existing["side"] != side:
+        old_qty = existing["qty"]
+        remaining = round(old_qty - total_qty, 10)
+
+        if remaining <= 0:
+            open_positions.pop(symbol, None)
+            text = (
+                f"<b>🔒 ПОЗИЦИЯ ЗАКРЫТА</b>\n"
+                f"Пара: <b>{symbol}</b>\n"
+                f"Цена закрытия: <b>{price_fmt}</b>\n"
+                f"Количество: <b>{total_qty}</b>\n"
+                f"🆔 Order ID: <code>{order_id}</code>"
+            )
+        else:
+            open_positions[symbol]["qty"] = remaining
+            text = (
+                f"<b>📉 ЧАСТИЧНОЕ ЗАКРЫТИЕ</b>\n"
+                f"Пара: <b>{symbol}</b>\n"
+                f"Закрыто: <b>{total_qty}</b> по {price_fmt}\n"
+                f"Осталось в позиции: <b>{remaining}</b>\n"
+                f"🆔 Order ID: <code>{order_id}</code>"
+            )
+
+    else:
+        open_positions[symbol] = {"side": side, "qty": total_qty, "price": avg_price}
+        text = (
+            f"<b>⚡ НОВАЯ ПОЗИЦИЯ</b>\n"
+            f"Пара: <b>{symbol}</b>\n"
+            f"Направление: {side_text}\n"
+            f"Цена входа: <b>{price_fmt}</b>\n"
+            f"Количество: <b>{total_qty}</b>\n"
+            f"🆔 Order ID: <code>{order_id}</code>"
+        )
+
+    send_telegram(text)
+    print(f"Отправлено: {symbol} {side} {total_qty} @ {avg_price}")
 
 async def connect():
     uri = "wss://stream.bybit.com/v5/private"
@@ -68,85 +142,33 @@ async def handle_message(data):
                 side = item.get("side", "—")
                 price = item.get("execPrice", "—")
                 qty = float(item.get("execQty", 0))
-                order_type = item.get("orderType", "—")
                 order_id = item.get("orderId", "—")
                 exec_type = item.get("execType", "")
 
                 if exec_type == "Funding":
                     return
 
-                price_fmt = format_price(price)
                 try:
                     price_float = float(price)
                 except:
                     price_float = 0
 
-                side_text = "🟢 ПОКУПКА" if side == "Buy" else "🔴 ПРОДАЖА"
-                existing = open_positions.get(symbol)
-
-                if existing and existing["side"] == side:
-                    old_qty = existing["qty"]
-                    old_price = existing["price"]
-                    new_qty = old_qty + qty
-                    new_avg = (old_price * old_qty + price_float * qty) / new_qty
-                    
-                    open_positions[symbol] = {
-                        "side": side,
-                        "qty": new_qty,
-                        "price": new_avg
-                    }
-
-                    text = (
-                        f"<b>➕ ДОБИРАЕМ ПОЗИЦИЮ</b>\n"
-                        f"Пара: <b>{symbol}</b>\n"
-                        f"Направление: {side_text}\n"
-                        f"Добавлено: <b>{qty}</b> по {price_fmt}\n"
-                        f"Итого в позиции: <b>{new_qty}</b>\n"
-                        f"Средняя цена входа: <b>{format_price(new_avg)}</b>\n"
-                        f"🆔 Order ID: <code>{order_id}</code>"
-                    )
-
-                elif existing and existing["side"] != side:
-                    old_qty = existing["qty"]
-                    remaining = round(old_qty - qty, 10)
-
-                    if remaining <= 0:
-                        open_positions.pop(symbol, None)
-                        text = (
-                            f"<b>🔒 ПОЗИЦИЯ ЗАКРЫТА</b>\n"
-                            f"Пара: <b>{symbol}</b>\n"
-                            f"Цена закрытия: <b>{price_fmt}</b>\n"
-                            f"Количество: <b>{qty}</b>\n"
-                            f"🆔 Order ID: <code>{order_id}</code>"
-                        )
-                    else:
-                        open_positions[symbol]["qty"] = remaining
-                        text = (
-                            f"<b>📉 ЧАСТИЧНОЕ ЗАКРЫТИЕ</b>\n"
-                            f"Пара: <b>{symbol}</b>\n"
-                            f"Закрыто: <b>{qty}</b> по {price_fmt}\n"
-                            f"Осталось в позиции: <b>{remaining}</b>\n"
-                            f"🆔 Order ID: <code>{order_id}</code>"
-                        )
-
+                if order_id in pending_orders:
+                    pending_orders[order_id]["total_qty"] += qty
+                    pending_orders[order_id]["total_value"] += price_float * qty
                 else:
-                    open_positions[symbol] = {
+                    pending_orders[order_id] = {
+                        "symbol": symbol,
                         "side": side,
-                        "qty": qty,
-                        "price": price_float
+                        "total_qty": qty,
+                        "total_value": price_float * qty,
                     }
-                    text = (
-                        f"<b>⚡ НОВАЯ ПОЗИЦИЯ</b>\n"
-                        f"Пара: <b>{symbol}</b>\n"
-                        f"Направление: {side_text}\n"
-                        f"Цена входа: <b>{price_fmt}</b>\n"
-                        f"Количество: <b>{qty}</b>\n"
-                        f"Тип: {order_type}\n"
-                        f"🆔 Order ID: <code>{order_id}</code>"
-                    )
 
-                send_telegram(text)
-                print(f"Сделка: {symbol} {side} {qty} @ {price}")
+                if order_id in pending_tasks:
+                    pending_tasks[order_id].cancel()
+                
+                task = asyncio.create_task(flush_order(order_id))
+                pending_tasks[order_id] = task
 
     except Exception as e:
         print(f"Ошибка обработки: {e} | Данные: {data}")
