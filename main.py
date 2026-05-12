@@ -12,8 +12,17 @@ API_SECRET = os.environ["BYBIT_API_SECRET"]
 TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT_ID = os.environ["TG_CHAT_ID"]
 
-# Хранилище открытых позиций в памяти
-open_positions = {}  # { "BTCUSDT": { "side": "Buy", "qty": 15, "price": 10000 } }
+open_positions = {}
+
+def format_price(price):
+    try:
+        p = float(price)
+        s = f"{p:.10f}".rstrip("0")
+        decimals = len(s.split(".")[1]) if "." in s else 0
+        decimals = max(decimals, 2)
+        return f"${p:,.{decimals}f}"
+    except:
+        return str(price)
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -63,28 +72,22 @@ async def handle_message(data):
                 order_id = item.get("orderId", "—")
                 exec_type = item.get("execType", "")
 
-                # Пропускаем финансовые записи (funding fee и тд)
                 if exec_type == "Funding":
                     return
 
+                price_fmt = format_price(price)
                 try:
-                    price_fmt = f"${float(price):,.2f}"
                     price_float = float(price)
                 except:
-                    price_fmt = price
                     price_float = 0
 
                 side_text = "🟢 ПОКУПКА" if side == "Buy" else "🔴 ПРОДАЖА"
-
-                # Проверяем есть ли уже позиция по этой монете
                 existing = open_positions.get(symbol)
 
                 if existing and existing["side"] == side:
-                    # Докупаем / добавляем в ту же сторону
                     old_qty = existing["qty"]
                     old_price = existing["price"]
                     new_qty = old_qty + qty
-                    # Средняя цена входа
                     new_avg = (old_price * old_qty + price_float * qty) / new_qty
                     
                     open_positions[symbol] = {
@@ -99,17 +102,15 @@ async def handle_message(data):
                         f"Направление: {side_text}\n"
                         f"Добавлено: <b>{qty}</b> по {price_fmt}\n"
                         f"Итого в позиции: <b>{new_qty}</b>\n"
-                        f"Средняя цена входа: <b>${new_avg:,.2f}</b>\n"
+                        f"Средняя цена входа: <b>{format_price(new_avg)}</b>\n"
                         f"🆔 Order ID: <code>{order_id}</code>"
                     )
 
                 elif existing and existing["side"] != side:
-                    # Закрываем или переворачиваем позицию
                     old_qty = existing["qty"]
-                    remaining = old_qty - qty
+                    remaining = round(old_qty - qty, 10)
 
                     if remaining <= 0:
-                        # Полное закрытие
                         open_positions.pop(symbol, None)
                         text = (
                             f"<b>🔒 ПОЗИЦИЯ ЗАКРЫТА</b>\n"
@@ -119,7 +120,6 @@ async def handle_message(data):
                             f"🆔 Order ID: <code>{order_id}</code>"
                         )
                     else:
-                        # Частичное закрытие
                         open_positions[symbol]["qty"] = remaining
                         text = (
                             f"<b>📉 ЧАСТИЧНОЕ ЗАКРЫТИЕ</b>\n"
@@ -130,7 +130,6 @@ async def handle_message(data):
                         )
 
                 else:
-                    # Новая позиция
                     open_positions[symbol] = {
                         "side": side,
                         "qty": qty,
