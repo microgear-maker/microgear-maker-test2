@@ -1,963 +1,388 @@
 import asyncio
-
 import hmac
-
 import hashlib
-
 import time
-
 import json
-
 import websockets
-
 import requests
-
 import os
-
 import io
-
 import urllib.request
-
 from PIL import Image, ImageDraw, ImageFont
 
 API_KEY = os.environ["BYBIT_API_KEY"]
-
 API_SECRET = os.environ["BYBIT_API_SECRET"]
-
 TG_TOKEN = os.environ["TG_TOKEN"]
-
 TG_CHAT_ID = os.environ["TG_CHAT_ID"]
 
 open_positions = {}
-
 pending_orders = {}
-
 pending_tasks = {}
 
 BG = (26, 29, 38)
-
 BG2 = (18, 20, 28)
-
 BORDER = (42, 45, 58)
-
 TEXT = (232, 234, 240)
-
 MUTED = (90, 95, 122)
-
 GREEN = (14, 203, 129)
-
 RED = (246, 70, 93)
-
 YELLOW = (240, 185, 11)
 
 FONT_REG = "/tmp/roboto.ttf"
-
 FONT_BOLD = "/tmp/roboto_bold.ttf"
 
 def download_fonts():
-
     try:
-
         urllib.request.urlretrieve(
-
             "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf",
-
             FONT_REG
-
         )
-
         urllib.request.urlretrieve(
-
             "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf",
-
             FONT_BOLD
-
         )
-
         print("✅ Шрифты загружены")
-
     except Exception as e:
-
         print(f"Ошибка загрузки шрифтов: {e}")
 
-def get_font(size, bold=False):
-
+def load_positions():
     try:
+        timestamp = str(int(time.time() * 1000))
+        params = "category=linear&settleCoin=USDT"
+        sign_str = timestamp + API_KEY + "5000" + params
+        signature = hmac.new(API_SECRET.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+        headers = {
+            "X-BAPI-API-KEY": API_KEY,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": "5000",
+            "X-BAPI-SIGN": signature,
+        }
+        url = f"https://api.bybit.com/v5/position/list?{params}"
+        resp = requests.get(url, headers=headers, timeout=15)
+        data = resp.json()
+        for item in data.get("result", {}).get("list", []):
+            size = float(item.get("size", 0))
+            if size <= 0:
+                continue
+            symbol = item["symbol"]
+            side = item["side"]
+            avg_price = float(item.get("avgPrice", 0))
+            open_positions[symbol] = {
+                "side": side,
+                "qty": size,
+                "price": avg_price,
+                "message_id": None
+            }
+        print(f"✅ Загружено позиций: {len(open_positions)}")
+    except Exception as e:
+        print(f"Ошибка загрузки позиций: {e}")
 
+download_fonts()
+load_positions()
+
+def get_font(size, bold=False):
+    try:
         path = FONT_BOLD if bold else FONT_REG
-
         return ImageFont.truetype(path, size)
-
     except:
-
         return ImageFont.load_default()
 
-def send_telegram(text):
-
-    try:
-
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-
-        requests.post(
-
-            url,
-
-            json={
-
-                "chat_id": TG_CHAT_ID,
-
-                "text": text,
-
-                "parse_mode": "HTML"
-
-            },
-
-            timeout=10
-
-        )
-
-    except Exception as e:
-
-        print(f"Ошибка Telegram: {e}")
-
-def send_photo(img):
-
-    try:
-
-        buf = io.BytesIO()
-
-        img.save(buf, format="PNG")
-
-        buf.seek(0)
-
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
-
-        requests.post(
-
-            url,
-
-            data={"chat_id": TG_CHAT_ID},
-
-            files={"photo": ("card.png", buf, "image/png")},
-
-            timeout=20
-
-        )
-
-    except Exception as e:
-
-        print(f"Ошибка отправки фото: {e}")
-
 def draw_rounded_rect(draw, xy, radius, fill, border=None):
-
     x1, y1, x2, y2 = xy
-
-    draw.rounded_rectangle(
-
-        [x1, y1, x2, y2],
-
-        radius=radius,
-
-        fill=fill,
-
-        outline=border,
-
-        width=1
-
-    )
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=fill, outline=border, width=1)
 
 def format_price(price):
-
     try:
-
         p = float(price)
-
         s = f"{p:.10f}".rstrip("0")
-
-        decimals = (
-
-            len(s.split(".")[1])
-
-            if "." in s
-
-            else 0
-
-        )
-
+        decimals = len(s.split(".")[1]) if "." in s else 0
         decimals = max(decimals, 2)
-
         return f"${p:,.{decimals}f}"
-
     except:
-
         return str(price)
 
+def calc_pnl_percent(entry_price, close_price, side):
+    try:
+        entry = float(entry_price)
+        close = float(close_price)
+        if entry == 0:
+            return None
+        if side == "Buy":
+            pnl = (close - entry) / entry * 100
+        else:
+            pnl = (entry - close) / entry * 100
+        return round(pnl, 2)
+    except:
+        return None
+
 def make_card(card_type, symbol, side, price, qty, extra=None):
-
     W = 600
-
-    H = 280 if extra else 240
-
+    H = 280 if (extra or card_type in ("close", "partial")) else 240
     img = Image.new("RGB", (W, H), BG)
-
     draw = ImageDraw.Draw(img)
-
-    draw_rounded_rect(
-
-        draw,
-
-        [0, 0, W - 1, H - 1],
-
-        16,
-
-        BG,
-
-        BORDER
-
-    )
+    draw_rounded_rect(draw, [0, 0, W-1, H-1], 16, BG, BORDER)
 
     if card_type == "new":
-
         type_color = GREEN
-
         type_text = "НОВАЯ ПОЗИЦИЯ"
-
     elif card_type == "add":
-
         type_color = YELLOW
-
         type_text = "ДОБОР ПОЗИЦИИ"
-
     elif card_type == "close":
-
         type_color = RED
-
         type_text = "ПОЗИЦИЯ ЗАКРЫТА"
-
     elif card_type == "partial":
-
         type_color = RED
-
         type_text = "ЧАСТИЧНОЕ ЗАКРЫТИЕ"
-
     else:
-
         type_color = TEXT
-
         type_text = card_type
 
     now = time.strftime("%d.%m.%Y  %H:%M")
-
     f11 = get_font(16)
-
     f13 = get_font(18)
-
     f15 = get_font(20)
-
     f26 = get_font(34, bold=True)
-
     f12 = get_font(15)
+    f16b = get_font(22, bold=True)
 
     draw.text((24, 22), type_text, font=f13, fill=type_color)
-
-    draw.text(
-
-        (W - 24, 22),
-
-        now,
-
-        font=f11,
-
-        fill=MUTED,
-
-        anchor="ra"
-
-    )
-
-    draw.text(
-
-        (24, 58),
-
-        symbol,
-
-        font=f26,
-
-        fill=TEXT
-
-    )
+    draw.text((W-24, 22), now, font=f11, fill=MUTED, anchor="ra")
+    draw.text((24, 58), symbol, font=f26, fill=TEXT)
 
     is_long = side == "Buy"
-
     badge_text = "LONG" if is_long else "SHORT"
-
     badge_color = GREEN if is_long else RED
-
     bw = 90
-
-    bh = 30
-
     bx = W - 24 - bw
-
     by = 55
+    draw_rounded_rect(draw, [bx, by, bx+bw, by+30], 15,
+                      (20, 60, 40) if is_long else (60, 20, 30), badge_color)
+    draw.text((bx + bw//2, by+15), badge_text, font=f13, fill=badge_color, anchor="mm")
 
-    draw_rounded_rect(
-
-        draw,
-
-        [bx, by, bx + bw, by + bh],
-
-        15,
-
-        (20, 60, 40) if is_long else (60, 20, 30),
-
-        badge_color
-
-    )
-
-    draw.text(
-
-        (bx + bw // 2, by + bh // 2),
-
-        badge_text,
-
-        font=f13,
-
-        fill=badge_color,
-
-        anchor="mm"
-
-    )
-
-    draw.line(
-
-        [(24, 105), (W - 24, 105)],
-
-        fill=BORDER,
-
-        width=1
-
-    )
+    draw.line([(24, 105), (W-24, 105)], fill=BORDER, width=1)
 
     cells = []
-
-    if card_type in ("new", "close", "partial"):
-
-        label1 = (
-
-            "Цена входа"
-
-            if card_type == "new"
-
-            else "Цена закрытия"
-
-        )
-
+    if card_type == "new":
         cells = [
-
-            (label1, price),
-
+            ("Цена входа", price),
             ("Количество", str(qty)),
-
         ]
-
-    elif card_type == "add":
-
+    elif card_type in ("close", "partial"):
+        pnl = extra.get("pnl") if extra else None
+        pnl_color = GREEN if pnl and pnl >= 0 else RED
+        pnl_text = f"+{pnl}%" if pnl and pnl >= 0 else f"{pnl}%" if pnl is not None else "—"
         cells = [
-
+            ("Цена закрытия", price),
+            ("Количество", str(qty)),
+            ("Цена входа", extra.get("entry_price", "—") if extra else "—"),
+            ("PnL", pnl_text),
+        ]
+    elif card_type == "add":
+        cells = [
             ("Добавлено", str(qty)),
-
             ("Цена", price),
-
-            ("Итого в позиции", extra.get("total_qty", "")),
-
-            ("Средняя цена", extra.get("avg_price", "")),
-
+            ("Итого в позиции", extra.get("total_qty", "") if extra else ""),
+            ("Средняя цена", extra.get("avg_price", "") if extra else ""),
         ]
 
     cell_w = (W - 48 - 10) // 2
-
     for i, (label, value) in enumerate(cells):
-
         col = i % 2
-
         row = i // 2
-
         cx = 24 + col * (cell_w + 10)
-
         cy = 118 + row * 80
+        draw_rounded_rect(draw, [cx, cy, cx+cell_w, cy+64], 10, BG2)
+        draw.text((cx+14, cy+12), label, font=f12, fill=MUTED)
 
-        draw_rounded_rect(
-
-            draw,
-
-            [cx, cy, cx + cell_w, cy + 64],
-
-            10,
-
-            BG2
-
-        )
-
-        draw.text(
-
-            (cx + 14, cy + 12),
-
-            label,
-
-            font=f12,
-
-            fill=MUTED
-
-        )
-
-        draw.text(
-
-            (cx + 14, cy + 36),
-
-            str(value),
-
-            font=f15,
-
-            fill=TEXT
-
-        )
+        # PnL красим отдельно
+        if label == "PnL":
+            pnl_val = extra.get("pnl") if extra else None
+            val_color = GREEN if pnl_val and pnl_val >= 0 else RED
+            draw.text((cx+14, cy+36), str(value), font=f16b, fill=val_color)
+        else:
+            draw.text((cx+14, cy+36), str(value), font=f15, fill=TEXT)
 
     return img
 
-def load_positions():
-
+def send_photo(img, reply_to=None):
     try:
-
-        timestamp = str(int(time.time() * 1000))
-
-        params = "category=linear&settleCoin=USDT"
-
-        sign_str = (
-
-            timestamp
-
-            + API_KEY
-
-            + "5000"
-
-            + params
-
-        )
-
-        signature = hmac.new(
-
-            API_SECRET.encode(),
-
-            sign_str.encode(),
-
-            hashlib.sha256
-
-        ).hexdigest()
-
-        headers = {
-
-            "X-BAPI-API-KEY": API_KEY,
-
-            "X-BAPI-TIMESTAMP": timestamp,
-
-            "X-BAPI-RECV-WINDOW": "5000",
-
-            "X-BAPI-SIGN": signature,
-
-        }
-
-        url = (
-
-            "https://api.bybit.com/"
-
-            f"v5/position/list?{params}"
-
-        )
-
-        resp = requests.get(
-
-            url,
-
-            headers=headers,
-
-            timeout=15
-
-        )
-
-        data = resp.json()
-
-        for item in data.get("result", {}).get("list", []):
-
-            size = float(item.get("size", 0))
-
-            if size <= 0:
-
-                continue
-
-            symbol = item["symbol"]
-
-            side = item["side"]
-
-            avg_price = float(item.get("avgPrice", 0))
-
-            open_positions[symbol] = {
-
-                "side": side,
-
-                "qty": size,
-
-                "price": avg_price
-
-            }
-
-        print(f"✅ Загружено позиций: {len(open_positions)}")
-
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
+        data = {"chat_id": TG_CHAT_ID}
+        if reply_to:
+            data["reply_to_message_id"] = reply_to
+        resp = requests.post(url, data=data, files={"photo": ("card.png", buf, "image/png")}, timeout=20)
+        result = resp.json()
+        if result.get("ok"):
+            return result["result"]["message_id"]
     except Exception as e:
+        print(f"Ошибка отправки фото: {e}")
+    return None
 
-        print(f"Ошибка загрузки позиций: {e}")
+def send_telegram(text):
+    try:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
+    except Exception as e:
+        print(f"Ошибка Telegram: {e}")
 
 def get_signature(secret, params_str):
-
-    return hmac.new(
-
-        secret.encode(),
-
-        params_str.encode(),
-
-        hashlib.sha256
-
-    ).hexdigest()
+    return hmac.new(secret.encode(), params_str.encode(), hashlib.sha256).hexdigest()
 
 async def flush_order(order_id):
-
     await asyncio.sleep(3)
-
     order = pending_orders.pop(order_id, None)
-
     pending_tasks.pop(order_id, None)
-
     if not order:
-
         return
 
     symbol = order["symbol"]
-
     side = order["side"]
-
     total_qty = order["total_qty"]
-
-    avg_price = (
-
-        order["total_value"] / total_qty
-
-        if total_qty
-
-        else 0
-
-    )
-
+    avg_price = order["total_value"] / total_qty if total_qty else 0
     price_fmt = format_price(avg_price)
-
     existing = open_positions.get(symbol)
-
     is_close = order.get("is_close", False)
 
     try:
-
         if is_close and existing:
-
             old_qty = existing["qty"]
-
             remaining = round(old_qty - total_qty, 10)
+            entry_price = existing.get("price", 0)
+            entry_side = existing.get("side", side)
+            reply_to = existing.get("message_id")
+            pnl = calc_pnl_percent(entry_price, avg_price, entry_side)
 
             if remaining <= 0:
-
                 open_positions.pop(symbol, None)
-
-                img = make_card(
-
-                    "close",
-
-                    symbol,
-
-                    side,
-
-                    price_fmt,
-
-                    total_qty
-
-                )
-
+                img = make_card("close", symbol, entry_side, price_fmt, total_qty, extra={
+                    "pnl": pnl,
+                    "entry_price": format_price(entry_price)
+                })
             else:
-
                 open_positions[symbol]["qty"] = remaining
-
-                img = make_card(
-
-                    "partial",
-
-                    symbol,
-
-                    side,
-
-                    price_fmt,
-
-                    total_qty
-
-                )
-
-            send_photo(img)
+                img = make_card("partial", symbol, entry_side, price_fmt, total_qty, extra={
+                    "pnl": pnl,
+                    "entry_price": format_price(entry_price)
+                })
+            send_photo(img, reply_to=reply_to)
 
         elif existing and existing["side"] == side:
-
             old_qty = existing["qty"]
-
             old_price = existing["price"]
-
             new_qty = old_qty + total_qty
-
-            new_avg = (
-
-                (old_price * old_qty)
-
-                + (avg_price * total_qty)
-
-            ) / new_qty
-
+            new_avg = (old_price * old_qty + avg_price * total_qty) / new_qty
             open_positions[symbol] = {
-
                 "side": side,
-
                 "qty": new_qty,
-
-                "price": new_avg
-
+                "price": new_avg,
+                "message_id": existing.get("message_id")
             }
-
-            img = make_card(
-
-                "add",
-
-                symbol,
-
-                side,
-
-                price_fmt,
-
-                total_qty,
-
-                extra={
-
-                    "total_qty": str(round(new_qty, 8)),
-
-                    "avg_price": format_price(new_avg)
-
-                }
-
-            )
-
+            img = make_card("add", symbol, side, price_fmt, total_qty, extra={
+                "total_qty": str(round(new_qty, 8)),
+                "avg_price": format_price(new_avg)
+            })
             send_photo(img)
 
         else:
-
+            img = make_card("new", symbol, side, price_fmt, total_qty)
+            msg_id = send_photo(img)
             open_positions[symbol] = {
-
                 "side": side,
-
                 "qty": total_qty,
-
-                "price": avg_price
-
+                "price": avg_price,
+                "message_id": msg_id
             }
 
-            img = make_card(
-
-                "new",
-
-                symbol,
-
-                side,
-
-                price_fmt,
-
-                total_qty
-
-            )
-
-            send_photo(img)
-
-        print(f"Отправлено: {symbol} {side} {total_qty}")
+        print(f"Отправлено: {symbol} {side} {total_qty} @ {avg_price}")
 
     except Exception as e:
-
         print(f"Ошибка карточки: {e}")
-
-        send_telegram(
-
-            f"Сделка: "
-
-            f"{symbol} "
-
-            f"{side} "
-
-            f"{total_qty} "
-
-            f"@ {price_fmt}"
-
-        )
+        send_telegram(f"Сделка: {symbol} {side} {total_qty} @ {price_fmt}")
 
 async def handle_message(data):
-
     if "topic" not in data:
-
         return
-
     try:
-
         if data["topic"] != "execution":
-
             return
-
         for item in data["data"]:
-
             symbol = item.get("symbol", "—")
-
             side = item.get("side", "—")
-
             price = item.get("execPrice", "0")
-
             qty = float(item.get("execQty", 0))
-
-            closed_qty = float(
-
-                item.get("closedSize", 0)
-
-            )
-
+            closed_qty = float(item.get("closedSize", 0))
             order_id = item.get("orderId", "—")
-
             exec_type = item.get("execType", "")
 
             if exec_type == "Funding":
-
                 continue
 
             try:
-
                 price_float = float(price)
-
             except:
-
                 price_float = 0
 
             existing = open_positions.get(symbol)
 
             if closed_qty > 0 and existing:
-
-                real_side = existing["side"]
-
                 close_order_id = f"{order_id}_close"
-
                 if close_order_id in pending_orders:
-
-                    pending_orders[
-
-                        close_order_id
-
-                    ]["total_qty"] += qty
-
-                    pending_orders[
-
-                        close_order_id
-
-                    ]["total_value"] += (
-
-                        price_float * qty
-
-                    )
-
+                    pending_orders[close_order_id]["total_qty"] += qty
+                    pending_orders[close_order_id]["total_value"] += price_float * qty
                 else:
-
-                    pending_orders[
-
-                        close_order_id
-
-                    ] = {
-
+                    pending_orders[close_order_id] = {
                         "symbol": symbol,
-
-                        "side": real_side,
-
+                        "side": existing["side"],
                         "total_qty": qty,
-
-                        "total_value": (
-
-                            price_float * qty
-
-                        ),
-
+                        "total_value": price_float * qty,
                         "is_close": True
-
                     }
-
                 if close_order_id in pending_tasks:
-
                     pending_tasks[close_order_id].cancel()
-
-                task = asyncio.create_task(
-
-                    flush_order(close_order_id)
-
-                )
-
+                task = asyncio.create_task(flush_order(close_order_id))
                 pending_tasks[close_order_id] = task
-
             else:
-
                 if order_id in pending_orders:
-
-                    pending_orders[
-
-                        order_id
-
-                    ]["total_qty"] += qty
-
-                    pending_orders[
-
-                        order_id
-
-                    ]["total_value"] += (
-
-                        price_float * qty
-
-                    )
-
+                    pending_orders[order_id]["total_qty"] += qty
+                    pending_orders[order_id]["total_value"] += price_float * qty
                 else:
-
                     pending_orders[order_id] = {
-
                         "symbol": symbol,
-
                         "side": side,
-
                         "total_qty": qty,
-
-                        "total_value": (
-
-                            price_float * qty
-
-                        )
-
+                        "total_value": price_float * qty
                     }
-
                 if order_id in pending_tasks:
-
                     pending_tasks[order_id].cancel()
-
-                task = asyncio.create_task(
-
-                    flush_order(order_id)
-
-                )
-
+                task = asyncio.create_task(flush_order(order_id))
                 pending_tasks[order_id] = task
 
     except Exception as e:
-
-        print(
-
-            f"Ошибка обработки: "
-
-            f"{e} | Данные: {data}"
-
-        )
+        print(f"Ошибка обработки: {e} | Данные: {data}")
 
 async def connect():
-
     uri = "wss://stream.bybit.com/v5/private"
-
     while True:
-
         try:
-
             async with websockets.connect(uri) as ws:
-
-                expires = int(
-
-                    (time.time() + 10) * 1000
-
-                )
-
-                sign_str = (
-
-                    f"GET/realtime{expires}"
-
-                )
-
-                signature = get_signature(
-
-                    API_SECRET,
-
-                    sign_str
-
-                )
-
-                auth = {
-
-                    "op": "auth",
-
-                    "args": [
-
-                        API_KEY,
-
-                        expires,
-
-                        signature
-
-                    ]
-
-                }
-
+                expires = int((time.time() + 10) * 1000)
+                sign_str = f"GET/realtime{expires}"
+                signature = get_signature(API_SECRET, sign_str)
+                auth = {"op": "auth", "args": [API_KEY, expires, signature]}
                 await ws.send(json.dumps(auth))
-
                 await asyncio.sleep(1)
-
-                subscribe = {
-
-                    "op": "subscribe",
-
-                    "args": ["execution"]
-
-                }
-
-                await ws.send(
-
-                    json.dumps(subscribe)
-
-                )
-
+                subscribe = {"op": "subscribe", "args": ["execution"]}
+                await ws.send(json.dumps(subscribe))
                 print("✅ Подключено к Bybit WebSocket")
-
                 async for message in ws:
-
                     data = json.loads(message)
-
                     await handle_message(data)
-
         except Exception as e:
-
-            print(
-
-                f"Ошибка: {e}, "
-
-                f"переподключение через 5 сек..."
-
-            )
-
+            print(f"Ошибка: {e}, переподключение через 5 сек...")
             await asyncio.sleep(5)
-
-download_fonts()
-
-load_positions()
 
 asyncio.run(connect())
